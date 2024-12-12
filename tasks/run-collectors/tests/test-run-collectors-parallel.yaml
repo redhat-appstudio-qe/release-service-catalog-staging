@@ -31,17 +31,19 @@ spec:
                 },
                 "spec": {
                   "application": "app",
-                  "collectors": [
-                    {
-                      "name": "test-collector",
-                      "type": "parallel-collector",
-                      "timeout": 600,
-                      "params": [
-                        {
-                          "name": "test-arg",
-                          "value": "test-value"
-                        }
-                      ]
+                  "collectors":
+                    "items": [
+                      {
+                        "name": "test-collector",
+                        "type": "parallel-collector",
+                        "timeout": 600,
+                        "params": [
+                          {
+                            "name": "test-arg",
+                            "value": "test-value"
+                          }
+                        ]
+                      }
                     }
                   ],
                   "target": "managed"
