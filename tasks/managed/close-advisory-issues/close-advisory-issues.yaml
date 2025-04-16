@@ -1,0 +1,217 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: close-advisory-issues
+  labels:
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: release
+spec:
+  description: >
+    Tekton task to close all issues referenced in the releaseNotes. It is meant to run after
+    the advisory is published. A comment will be added to each closed issue with a link
+    to the advisory it was fixed in
+  params:
+    - name: dataPath
+      description: Path to the JSON string of the merged data to use in the data workspace
+      type: string
+    - name: advisoryUrl
+      description: The url of the advisory the issues were fixed in. This is added in a comment on the issue
+      type: string
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+      default: "empty"
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifacts created in the
+        OCI repository. An empty string means the artifacts do not expire.
+      type: string
+      default: "1d"
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      type: string
+      default: ""
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: ""
+    - name: sourceDataArtifact
+      type: string
+      description: Location of trusted artifacts to be used to populate data directory
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
+      default: $(workspaces.data.path)
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks and stepactions to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
+  workspaces:
+    - name: data
+      description: The workspace where the snapshot spec json file resides
+  results:
+    - description: Produced trusted data artifact
+      name: sourceDataArtifact
+      type: string
+  volumes:
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+    env:
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.ociArtifactExpiresAfter)
+      - name: "ORAS_OPTIONS"
+        value: "$(params.orasOptions)"
+      - name: "DEBUG"
+        value: "$(params.trustedArtifactsDebug)"
+  steps:
+    - name: skip-trusted-artifact-operations
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/skip-trusted-artifact-operations/skip-trusted-artifact-operations.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+    - name: use-trusted-artifact
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
+    - name: close-issues
+      image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
+      env:
+        - name: ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: konflux-advisory-jira-secret
+              key: token
+      script: |
+        #!/usr/bin/env bash
+        # We do not set -x here because it would leak the ACCESS_TOKEN
+        set -eu
+
+        ISSUE_TRACKERS='{
+            "Jira": {
+                "api": "rest/api/2/issue",
+                "servers": [
+                    "issues.redhat.com",
+                    "jira.atlassian.com"
+                ]
+            },
+            "bugzilla": {
+                "api": "rest/bug",
+                "servers": [
+                    "bugzilla.redhat.com"
+                ]
+            }
+        }'
+
+        DATA_FILE="$(params.dataDir)/$(params.dataPath)"
+        if [ ! -f "${DATA_FILE}" ] ; then
+            echo "No data JSON was provided."
+            exit 1
+        fi
+
+        RC=0
+
+        NUM_ISSUES=$(jq -cr '.releaseNotes.issues.fixed | length' "${DATA_FILE}")
+        for ((i = 0; i < NUM_ISSUES; i++)); do
+            issue=$(jq -c --argjson i "$i" '.releaseNotes.issues.fixed[$i]' "${DATA_FILE}")
+            server=$(jq -r '.source' <<< "$issue")
+            if [ "$server" != "issues.redhat.com" ] ; then
+                echo "This task currently only supports closing issues on issues.redhat.com"
+                echo "Skipping issue $issue as it is on $server"
+                continue
+            fi
+
+            CURL_ARGS=(
+              -H "Authorization: Bearer $ACCESS_TOKEN"
+              --retry 3
+            )
+
+            API=$(jq -r '.[] | select(.servers[] | contains("'"$server"'")) | .api' <<< "$ISSUE_TRACKERS")
+            API_URL="https://$(jq -r '.source' <<< "$issue")/${API}/$(jq -r '.id' <<< "$issue")"
+
+            if [ "$(curl-with-retry "${CURL_ARGS[@]}" "${API_URL}" | jq -r '.fields.status.name')" == "Closed" ] ; then
+                echo "Issue $issue is already in Closed state. Skipping it."
+                continue
+            fi
+
+            echo "Closing issue $issue"
+            # Get the Closed transition id. This varies per Jira project
+            if ! CLOSED_ID="$(curl-with-retry "${CURL_ARGS[@]}" "${API_URL}/transitions" \
+              | jq -r '.transitions[] | select(.name=="Closed") | .id')"; then
+                echo "Error: failed to fetch the closed state id for issue $issue."
+                RC=1
+                continue
+            fi
+
+            # Close the issue
+            CLOSE_COMMENT="Fixed in Konflux Advisory $(params.advisoryUrl)"
+            if ! curl-with-retry "${CURL_ARGS[@]}" -XPOST --data \
+              '{"transition":{"id":"'"$CLOSED_ID"'"},"update":{"comment":[{"add":{"body":"'"$CLOSE_COMMENT"'"}}]}}' \
+              -H "Content-Type: application/json" "${API_URL}/transitions"; then
+                echo "Error: failed to close issue $issue."
+                RC=1
+            fi
+        done
+
+        exit $RC
+    - name: create-trusted-artifact
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/create-trusted-artifact/create-trusted-artifact.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)
+    - name: patch-source-data-artifact-result
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/patch-source-data-artifact-result/patch-source-data-artifact-result.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)

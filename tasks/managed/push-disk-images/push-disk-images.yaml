@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: push-disk-images
   labels:
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.4.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -25,12 +25,18 @@ spec:
     - name: resultsDirPath
       description: Path to the results directory in the data workspace
       type: string
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
   workspaces:
     - name: data
       description: Workspace where the json files are stored
   steps:
     - name: run-script
-      image: quay.io/konflux-ci/release-service-utils:6a7ca9ba0ddd70404fe2267551409925cf513132
+      image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
       script: |
         #!/usr/bin/env bash
         set -ex
@@ -77,8 +83,10 @@ spec:
           exit 1
         fi
 
+        IR_RESULT_FILE=$(mktemp)
+
         echo "Creating InternalRequest to push disk images..."
-        internal-request -r "push-disk-images" \
+        internal-request --pipeline "push-disk-images" \
                          -p snapshot_json="${snapshot}" \
                          -p exodusGwSecret="${exodusGwSecret}" \
                          -p exodusGwEnv="${exodusGwEnv}" \
@@ -86,6 +94,8 @@ spec:
                          -p udcacheSecret="${udcacheSecret}" \
                          -p cgwHostname="${cgwHostname}" \
                          -p cgwSecret="${cgwSecret}" \
+                         -p taskGitUrl="$(params.taskGitUrl)" \
+                         -p taskGitRevision="$(params.taskGitRevision)" \
                          -l ${pipelinerun_label}="$(params.pipelineRunUid)" \
                          -s true \
                          -t 86400 \
@@ -93,10 +103,10 @@ spec:
                          --pipeline-timeout 24h0m0s \
                          --task-timeout 23h50m0s \
                          --finally-timeout 0h10m0s \
-                         > "$(workspaces.data.path)"/ir-result.txt
+                         > "$IR_RESULT_FILE"
 
         set +x
-        internalRequest=$(awk 'NR==1{ print $2 }' "$(workspaces.data.path)/ir-result.txt" | xargs)
+        internalRequest=$(awk 'NR==1{ print $2 }' "$IR_RESULT_FILE" | xargs)
         echo "done (${internalRequest})"
 
         results=$(kubectl get internalrequest "$internalRequest" -o=jsonpath='{.status.results}')

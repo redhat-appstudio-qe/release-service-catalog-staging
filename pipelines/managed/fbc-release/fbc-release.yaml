@@ -4,7 +4,7 @@ kind: Pipeline
 metadata:
   name: fbc-release
   labels:
-    app.kubernetes.io/version: "4.2.0"
+    app.kubernetes.io/version: "4.4.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -44,6 +44,9 @@ spec:
     - name: verify_ec_task_bundle
       type: string
       description: The location of the bundle containing the verify-enterprise-contract task
+    - name: verify_ec_task_git_revision
+      type: string
+      description: The git revision to be used when consuming the verify-conforma task
     - name: taskGitUrl
       type: string
       description: The url to the git repo where the release-service-catalog tasks to be used are stored
@@ -117,6 +120,10 @@ spec:
           value: $(params.snapshot)
         - name: subdirectory
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -129,9 +136,13 @@ spec:
         - name: schema
           value: $(params.taskGitUrl)/raw/$(params.taskGitRevision)/schema/dataKeys.json
         - name: systems
-          value: 
+          value:
             - fbc
             - sign
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -159,6 +170,10 @@ spec:
       params:
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -248,6 +263,10 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       runAfter:
         - verify-enterprise-contract
     - name: add-fbc-contribution-to-index-image
@@ -276,6 +295,10 @@ spec:
           value: $(context.pipelineRun.uid)
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: taskGitUrl
+          value: $(params.taskGitUrl)
+        - name: taskGitRevision
+          value: $(params.taskGitRevision)
       runAfter:
         - check-fbc-packages
         - verify-enterprise-contract
@@ -389,6 +412,10 @@ spec:
           value: "3"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: $(params.taskGitUrl)
+        - name: taskGitRevision
+          value: $(params.taskGitRevision)
       when:
         - input: $(tasks.add-fbc-contribution-to-index-image.results.mustPublishIndexImage)
           operator: in
@@ -401,6 +428,10 @@ spec:
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         resolver: "git"
         params:

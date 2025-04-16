@@ -4,7 +4,7 @@ kind: Pipeline
 metadata:
   name: push-disk-images-to-cdn
   labels:
-    app.kubernetes.io/version: "1.4.0"
+    app.kubernetes.io/version: "1.7.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -44,6 +44,9 @@ spec:
     - name: verify_ec_task_bundle
       type: string
       description: The location of the bundle containing the verify-enterprise-contract task
+    - name: verify_ec_task_git_revision
+      type: string
+      description: The git revision to be used when consuming the verify-conforma task
     - name: taskGitUrl
       type: string
       description: The url to the git repo where the release-service-catalog tasks to be used are stored
@@ -104,6 +107,10 @@ spec:
           value: $(params.snapshot)
         - name: subdirectory
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -130,6 +137,10 @@ spec:
           value: $(tasks.collect-data.results.snapshotNamespace)
         - name: SNAPSHOT_PATH
           value: $(workspaces.data.path)/$(tasks.collect-data.results.snapshotSpec)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -152,8 +163,12 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
-        - name: config
+        - name: data
           workspace: release-workspace
       runAfter:
         - reduce-snapshot
@@ -196,6 +211,10 @@ spec:
         - name: systems
           value:
             - cdn
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -234,6 +253,10 @@ spec:
           value: $(context.pipelineRun.uid)
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: taskGitUrl
+          value: $(params.taskGitUrl)
+        - name: taskGitRevision
+          value: $(params.taskGitRevision)
       workspaces:
         - name: data
           workspace: release-workspace
@@ -245,6 +268,10 @@ spec:
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         resolver: "git"
         params:

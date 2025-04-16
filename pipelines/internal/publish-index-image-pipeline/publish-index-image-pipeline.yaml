@@ -1,0 +1,63 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: publish-index-image-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: release
+spec:
+  description: >-
+      Pipeline to publish a built FBC index image using skopeo
+  params:
+    - name: sourceIndex
+      type: string
+      description: sourceIndex signing image
+    - name: targetIndex
+      type: string
+      description: targetIndex signing image
+    - name: retries
+      type: string
+      default: "0"
+      description: Number of skopeo retries
+    - name: publishingCredentials
+      type: string
+      description: The credentials used to access the registries
+    - name: requestUpdateTimeout
+      type: string
+      default: "360"
+      description: Max seconds waiting for the status update
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+      default: https://github.com/konflux-ci/release-service-catalog.git
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
+  tasks:
+    - name: publish-index-image-task
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/internal/publish-index-image-task/publish-index-image-task.yaml
+      params:
+        - name: sourceIndex
+          value: $(params.sourceIndex)
+        - name: targetIndex
+          value: $(params.targetIndex)
+        - name: retries
+          value: $(params.retries)
+        - name: publishingCredentials
+          value: $(params.publishingCredentials)
+        - name: requestUpdateTimeout
+          value: $(params.requestUpdateTimeout)
+  results:
+    - name: requestMessage
+      value: $(tasks.publish-index-image-task.results.requestMessage)

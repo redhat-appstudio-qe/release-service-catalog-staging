@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: create-advisory-task
   labels:
-    app.kubernetes.io/version: "0.11.0"
+    app.kubernetes.io/version: "1.1.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -37,14 +37,21 @@ spec:
     - name: errata_secret_name
       type: string
       description: The name of the secret that contains the errata service account metadata
+    - name: internalRequestPipelineRunName
+      type: string
+      description: Name of the PipelineRun that called this task
   results:
     - name: result
       description: Success if the task succeeds, the error otherwise
     - name: advisory_url
       description: The advisory url if the task succeeds, empty string otherwise
+    - name: internalRequestPipelineRunName
+      description: Name of the PipelineRun that called this task
+    - name: internalRequestTaskRunName
+      description: Name of this Task Run to be made available to caller
   steps:
     - name: create-advisory
-      image: quay.io/konflux-ci/release-service-utils:9089cafbf36bb889b4b73d8c2965613810f13736
+      image: quay.io/konflux-ci/release-service-utils:26e22ecf2c23e7ec8134fede3b40a6e6aef8ac20
       env:
         - name: GITLAB_HOST
           valueFrom:
@@ -95,6 +102,10 @@ spec:
           #!/usr/bin/env bash
           set -eo pipefail
 
+          STDERR_FILE=/tmp/stderr.txt
+          echo -n "$(params.internalRequestPipelineRunName)" > "$(results.internalRequestPipelineRunName.path)"
+          echo -n "$(context.taskRun.name)" > "$(results.internalRequestTaskRunName.path)"
+
           exitfunc() {
               local err=$1
               local line=$2
@@ -104,6 +115,9 @@ spec:
               else
                   echo -n \
                     "$0: ERROR '$command' failed at line $line - exited with status $err" > "$(results.result.path)"
+                  if [ -f "$STDERR_FILE" ] ; then
+                      tail -n 20 "$STDERR_FILE" >> "$(results.result.path)"
+                  fi
               fi
               echo -n "${ADVISORY_URL}" > "$(results.advisory_url.path)"
               exit 0 # exit the script cleanly as there is no point in proceeding past an error or exit call
@@ -128,10 +142,63 @@ spec:
           # This also cds into the git repo
           git_clone_and_checkout --repository "$GIT_REPO" --revision "$REPO_BRANCH"
 
-          # Inject signing key into ADVISORY_JSON
+          CONTENT_IMAGES=$(jq -c '.content.images // []' <<< "$ADVISORY_JSON" )
+
+          # Use ISO 8601 format in UTC/Zulu time, e.g. 2024-03-06T17:27:38Z
+          SHIP_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          YEAR=${SHIP_DATE%%-*} # derive the year from the ship date
+          # Define advisory directory
+          ADVISORY_BASE_DIR="data/advisories/$(params.origin)"
+          echo "Checking advisories in directory: ${ADVISORY_BASE_DIR}"
+
+          # Check existing advisories across ALL years
+          EXISTING_ADVISORIES=$(
+            find "${ADVISORY_BASE_DIR}" -mindepth 2 -type d -printf "%T@ %p\n" |  # year/advisory dir with modified time
+            sort -nr |                                                            # sort by latest modified first
+            cut -d' ' -f2- |                                                      # remove the timestamp, keep only path
+            sed "s|^${ADVISORY_BASE_DIR}/||"                                      # keeping year/advisory format
+          )
+
+          if [[ -z "$EXISTING_ADVISORIES" ]]; then
+              echo "No existing advisories found."
+          fi
+
+          for ADVISORY_SUBDIR in $EXISTING_ADVISORIES; do
+              ADVISORY_FILE="${ADVISORY_BASE_DIR}/${ADVISORY_SUBDIR}/advisory.yaml"
+              EXISTING_CONTENT=$(yq -o=json '.spec.content.images // []' "${ADVISORY_FILE}")
+
+              echo "Processing advisory: ${ADVISORY_FILE}"
+              echo "Existing images in advisory: $EXISTING_CONTENT"
+
+              # Update CONTENT_IMAGES by removing images that already exist in the advisory
+              CONTENT_IMAGES=$(echo "$CONTENT_IMAGES" | jq --argjson existing "$EXISTING_CONTENT" '
+                map(select(
+                  .containerImage as $ci |
+                  .tags as $tags |
+                  .repository as $repo |
+                  ($existing | map(select(
+                    .containerImage == $ci and .tags == $tags and .repository == $repo
+                  )) | length == 0)
+                ))')
+
+              echo "Remaining images after filtering: $CONTENT_IMAGES"
+          done
+
+          # If after filtering, no images are left, then we can exit early
+          if jq -e 'length == 0' <<< "$CONTENT_IMAGES" >/dev/null; then
+              echo "Matching advisory exists: ${ADVISORY_FILE}. Skipping creation."
+              ADVISORY_URL="${GIT_REPO//\.git/}/-/blob/main/${ADVISORY_FILE}"
+              echo -n "Success" > "$(results.result.path)"
+              echo -n "${ADVISORY_URL}" > "$(results.advisory_url.path)"
+              exit 0
+          fi
+
+          NEW_ADVISORY_JSON=$(echo "$ADVISORY_JSON" | jq --argjson new_images "$CONTENT_IMAGES" \
+            '.content.images = $new_images')
+
           signingKey=$(kubectl get configmap "$(params.config_map_name)" -o jsonpath="{.data.SIG_KEY_NAME}")
           advisoryJsonWithKey=$(jq -c --arg key "$signingKey" \
-            '.content.images[] += {"signingKey": $key}' <<< "$ADVISORY_JSON")
+            '.content.images[] += {"signingKey": $key}' <<< "$NEW_ADVISORY_JSON")
 
           # write keytab to file
           echo -n "${SERVICE_ACCOUNT_KEYTAB}" | base64 --decode > /tmp/keytab
@@ -147,9 +214,6 @@ spec:
           ID=$(curl --retry 3 --negotiate -u : "${ERRATA_API}/advisory/reserve_live_id" -XPOST | jq -r '.live_id')
           ADVISORY_NUM=$(printf "%04d" "$ID")
 
-          # Use ISO 8601 format in UTC/Zulu time, e.g. 2024-03-06T17:27:38Z
-          SHIP_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          YEAR=${SHIP_DATE%%-*} # derive the year from the ship date
           # group advisories by <origin workspace>/year
           ADVISORY_DIR="data/advisories/$(params.origin)/${YEAR}/${ADVISORY_NUM}"
           mkdir -p "${ADVISORY_DIR}"
@@ -166,12 +230,12 @@ spec:
             --template /home/templates/advisory.yaml.jinja
 
           # Ensure the created advisory file passes the advisory schema
-          check-jsonschema --schemafile schema/advisory.json "$ADVISORY_FILEPATH"
+          check-jsonschema --schemafile schema/advisory.json "$ADVISORY_FILEPATH" 2> "$STDERR_FILE"
 
           git add "${ADVISORY_FILEPATH}"
           git commit -m "[Konflux Release] new advisory for $(params.application)"
           echo "Pushing to ${REPO_BRANCH}..."
-          git_push_with_retries --branch $REPO_BRANCH --retries 5 --url origin
+          git_push_with_retries --branch $REPO_BRANCH --retries 5 --url origin 2> "$STDERR_FILE"
           # Construct the advisory url to report back to the user as a result
           # Note: This currently only supports gitlab repos, which is all we expect for now
           ADVISORY_URL="${GIT_REPO//\.git/}/-/blob/${REPO_BRANCH}/${ADVISORY_FILEPATH}"

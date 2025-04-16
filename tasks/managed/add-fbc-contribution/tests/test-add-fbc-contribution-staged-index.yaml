@@ -17,7 +17,7 @@ spec:
           - name: data
         steps:
           - name: setup-values
-            image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+            image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
             script: |
               #!/usr/bin/env bash
               set -eux
@@ -39,6 +39,7 @@ spec:
               cat > "$(workspaces.data.path)/data.json" << EOF
               {
                 "fbc": {
+                  "fbcPublishingCredentials": "test-fbc-publishing-credentials",
                   "stagedIndex": true,
                   "buildTimeoutSeconds": 420
                 }
@@ -60,6 +61,10 @@ spec:
           value: data.json
         - name: resultsDirPath
           value: results
+        - name: taskGitUrl
+          value: "http://localhost"
+        - name: taskGitRevision
+          value: "main"
       workspaces:
         - name: data
           workspace: tests-workspace
@@ -72,7 +77,7 @@ spec:
       taskSpec:
         steps:
           - name: check-result
-            image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+            image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
             script: |
               #!/usr/bin/env bash
               #
@@ -97,7 +102,7 @@ spec:
       taskSpec:
         steps:
           - name: delete-crs
-            image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+            image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
             script: |
               #!/usr/bin/env sh
               set -eux

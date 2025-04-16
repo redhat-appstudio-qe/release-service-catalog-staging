@@ -4,7 +4,7 @@ kind: Pipeline
 metadata:
   name: rh-advisories
   labels:
-    app.kubernetes.io/version: "1.8.0"
+    app.kubernetes.io/version: "1.13.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -52,6 +52,9 @@ spec:
     - name: verify_ec_task_bundle
       type: string
       description: The location of the bundle containing the verify-enterprise-contract task
+    - name: verify_ec_task_git_revision
+      type: string
+      description: The git revision to be used when consuming the verify-conforma task
     - name: taskGitUrl
       type: string
       description: The url to the git repo where the release-service-catalog tasks to be used are stored
@@ -59,6 +62,21 @@ spec:
     - name: taskGitRevision
       type: string
       description: The revision in the taskGitUrl repo to be used
+    - name: ociStorage
+      type: string
+      default: "empty"
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: ""
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      type: string
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
+      default: "/workspace/data"
   workspaces:
     - name: release-workspace
   results:
@@ -90,6 +108,7 @@ spec:
         - name: requireInternalServices
           value: "true"
     - name: collect-data
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:
@@ -112,12 +131,17 @@ spec:
           value: $(params.snapshot)
         - name: subdirectory
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - verify-access-to-resources
     - name: reduce-snapshot
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:
@@ -129,7 +153,7 @@ spec:
             value: tasks/managed/reduce-snapshot/reduce-snapshot.yaml
       params:
         - name: SNAPSHOT
-          value: $(workspaces.data.path)/$(tasks.collect-data.results.snapshotSpec)
+          value: $(params.dataDir)/$(tasks.collect-data.results.snapshotSpec)
         - name: SINGLE_COMPONENT
           value: $(tasks.collect-data.results.singleComponentMode)
         - name: SINGLE_COMPONENT_CUSTOM_RESOURCE
@@ -137,7 +161,11 @@ spec:
         - name: SINGLE_COMPONENT_CUSTOM_RESOURCE_NS
           value: $(tasks.collect-data.results.snapshotNamespace)
         - name: SNAPSHOT_PATH
-          value: $(workspaces.data.path)/$(tasks.collect-data.results.snapshotSpec)
+          value: $(params.dataDir)/$(tasks.collect-data.results.snapshotSpec)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -171,6 +199,7 @@ spec:
       runAfter:
         - verify-access-to-resources
     - name: apply-mapping
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 3
       taskRef:
         resolver: "git"
@@ -188,8 +217,12 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
-        - name: config
+        - name: data
           workspace: release-workspace
       runAfter:
         - reduce-snapshot
@@ -226,12 +259,17 @@ spec:
           workspace: release-workspace
       runAfter:
         - apply-mapping
-    - name: populate-release-notes-images
+    - name: populate-release-notes
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -239,7 +277,7 @@ spec:
           - name: revision
             value: $(params.taskGitRevision)
           - name: pathInRepo
-            value: tasks/managed/populate-release-notes-images/populate-release-notes-images.yaml
+            value: tasks/managed/populate-release-notes/populate-release-notes.yaml
         resolver: git
       runAfter:
         - apply-mapping
@@ -247,11 +285,16 @@ spec:
         - name: data
           workspace: release-workspace
     - name: embargo-check
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -265,8 +308,35 @@ spec:
         - name: data
           workspace: release-workspace
       runAfter:
-        - populate-release-notes-images
+        - check-data-keys
+        - populate-release-notes
+    - name: set-advisory-severity
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
+      params:
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: pipelineRunUid
+          value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+      taskRef:
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/set-advisory-severity/set-advisory-severity.yaml
+        resolver: git
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - populate-release-notes
     - name: collect-cosign-params
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:
@@ -279,12 +349,17 @@ spec:
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - collect-data
     - name: rh-sign-image-cosign
+      timeout: "6h00m0s"
       when:
         - input: $(tasks.collect-cosign-params.results.cosign-secret-name)
           operator: notin
@@ -304,7 +379,11 @@ spec:
         - name: secretName
           value: "$(tasks.collect-cosign-params.results.cosign-secret-name)"
         - name: signRegistryAccessPath
-          value: $(tasks.publish-pyxis-repository.results.signRegistryAccessPath)
+          value: "$(tasks.publish-pyxis-repository.results.signRegistryAccessPath)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -313,6 +392,7 @@ spec:
         - push-snapshot
         - collect-cosign-params
     - name: push-snapshot
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 5
       when:
         - input: "$(tasks.apply-mapping.results.mapped)"
@@ -334,12 +414,17 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - rh-sign-image
     - name: collect-pyxis-params
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:
@@ -352,6 +437,10 @@ spec:
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -384,16 +473,16 @@ spec:
           value: 1800
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
-        - name: taskGitUrl
-          value: $(params.taskGitUrl)
-        - name: taskGitRevision
-          value: $(params.taskGitRevision)
         - name: pyxisServer
           value: $(tasks.collect-pyxis-params.results.server)
         - name: pyxisSecret
           value: $(tasks.collect-pyxis-params.results.secret)
         - name: signRegistryAccessPath
           value: $(tasks.publish-pyxis-repository.results.signRegistryAccessPath)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -403,6 +492,7 @@ spec:
         - publish-pyxis-repository
         - extract-requester-from-release
     - name: create-pyxis-image
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 5
       taskRef:
         resolver: "git"
@@ -424,12 +514,17 @@ spec:
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - push-snapshot
     - name: publish-pyxis-repository
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 5
       taskRef:
         resolver: "git"
@@ -451,6 +546,10 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -458,6 +557,7 @@ spec:
         - collect-pyxis-params
         - apply-mapping
     - name: push-rpm-data-to-pyxis
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 5
       taskRef:
         resolver: "git"
@@ -475,12 +575,17 @@ spec:
           value: $(tasks.collect-pyxis-params.results.server)
         - name: pyxisSecret
           value: $(tasks.collect-pyxis-params.results.secret)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - create-pyxis-image
     - name: update-component-sbom
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -499,15 +604,20 @@ spec:
           workspace: release-workspace
       params:
         - name: sbomJsonPath
-          value: "$(tasks.populate-release-notes-images.results.sbomDataPath)"
+          value: "$(tasks.populate-release-notes.results.sbomDataPath)"
         - name: downloadedSbomPath
           value: "$(tasks.push-rpm-data-to-pyxis.results.sbomPath)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       runAfter:
         - collect-data
         - collect-atlas-params
         - push-rpm-data-to-pyxis
-        - populate-release-notes-images
+        - populate-release-notes
     - name: upload-component-sbom
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -521,6 +631,10 @@ spec:
           value: "$(tasks.collect-atlas-params.results.ssoTokenUrl)"
         - name: bombasticApiUrl
           value: "$(tasks.collect-atlas-params.results.bombasticApiUrl)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -536,6 +650,7 @@ spec:
       runAfter:
         - update-component-sbom
     - name: run-file-updates
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       params:
         - name: fileUpdatesPath
           value: $(tasks.collect-data.results.data)
@@ -547,6 +662,10 @@ spec:
           value: $(context.pipelineRun.uid)
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       runAfter:
         - push-rpm-data-to-pyxis
       taskRef:
@@ -563,6 +682,7 @@ spec:
         - name: data
           workspace: release-workspace
     - name: check-data-keys
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
@@ -574,6 +694,10 @@ spec:
             - pyxis
             - mapping
             - sign
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -587,8 +711,9 @@ spec:
         - name: data
           workspace: release-workspace
       runAfter:
-        - populate-release-notes-images
+        - populate-release-notes
     - name: collect-atlas-params
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:
@@ -601,12 +726,17 @@ spec:
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
         - collect-data
     - name: create-product-sbom
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -614,6 +744,10 @@ spec:
       params:
         - name: dataJsonPath
           value: "$(tasks.collect-data.results.data)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -628,8 +762,9 @@ spec:
           workspace: release-workspace
       runAfter:
         - collect-atlas-params
-        - populate-release-notes-images
+        - populate-release-notes
     - name: upload-product-sbom
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -643,6 +778,10 @@ spec:
           value: "$(tasks.collect-atlas-params.results.ssoTokenUrl)"
         - name: bombasticApiUrl
           value: "$(tasks.collect-atlas-params.results.bombasticApiUrl)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -658,6 +797,7 @@ spec:
       runAfter:
         - create-product-sbom
     - name: create-advisory
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       retries: 5
       params:
         - name: releasePlanAdmissionPath
@@ -670,6 +810,10 @@ spec:
           value: "$(tasks.collect-data.results.resultsDir)"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         params:
           - name: url
@@ -689,12 +833,43 @@ spec:
         - run-file-updates
         - rh-sign-image
         - rh-sign-image-cosign
+        - set-advisory-severity
+    - name: close-advisory-issues
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
+      params:
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: advisoryUrl
+          value: "$(tasks.create-advisory.results.advisory_url)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+      taskRef:
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/close-advisory-issues/close-advisory-issues.yaml
+        resolver: git
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - create-advisory
     - name: update-cr-status
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       params:
         - name: resource
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       taskRef:
         resolver: "git"
         params:
@@ -711,6 +886,7 @@ spec:
         - create-advisory
   finally:
     - name: cleanup
+      timeout: "4h"  # temp workaround until github.com/konflux-ci/release-service/issues/603 is fixed
       taskRef:
         resolver: "git"
         params:

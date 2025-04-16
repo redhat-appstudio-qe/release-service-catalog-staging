@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: push-snapshot
   labels:
-    app.kubernetes.io/version: "6.4.2"
+    app.kubernetes.io/version: "7.0.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -21,6 +21,10 @@ spec:
     - name: resultsDirPath
       description: Path to the results directory in the data workspace
       type: string
+    - name: concurrentLimit
+      description: The maximum number of images to be proccessed concurrently
+      type: string
+      default: "10"
     - name: retries
       description: Retry copy N times.
       type: string
@@ -33,12 +37,98 @@ spec:
       type: string
       description: The name of the key in the ConfigMap that contains the CA bundle data.
       default: ca-bundle.crt
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+      default: "empty"
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifacts created in the
+        OCI repository. An empty string means the artifacts do not expire.
+      type: string
+      default: "1d"
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      type: string
+      default: ""
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: ""
+    - name: sourceDataArtifact
+      type: string
+      description: Location of trusted artifacts to be used to populate data directory
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
+      default: $(workspaces.data.path)
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks and stepactions to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
+  results:
+    - description: Produced trusted data artifact
+      name: sourceDataArtifact
+      type: string
   workspaces:
     - name: data
       description: The workspace where the snapshot spec and data json files reside
+  volumes:
+    - name: trusted-ca
+      configMap:
+        name: $(params.caTrustConfigMapName)
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        optional: true
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+    env:
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.ociArtifactExpiresAfter)
+      - name: "ORAS_OPTIONS"
+        value: "$(params.orasOptions)"
+      - name: "DEBUG"
+        value: "$(params.trustedArtifactsDebug)"
   steps:
+    - name: skip-trusted-artifact-operations
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/skip-trusted-artifact-operations/skip-trusted-artifact-operations.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+    - name: use-trusted-artifact
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
     - name: push-snapshot
-      image: quay.io/konflux-ci/release-service-utils:76021ef1e9f0f14397260ee24c9a43e37d3f83ac
+      image: quay.io/konflux-ci/release-service-utils:066a63d25546239e79533b99c83ff521a045c819
       script: |
         #!/usr/bin/env bash
         set -eux
@@ -50,8 +140,15 @@ spec:
           # so create a custom auth file with just one entry.
           DEST_AUTH_FILE=$(mktemp)
           registry=$(echo "$4" | cut -d '/' -f 1)
-          select-oci-auth "$4" | jq -c \
-            '.auths."'"$4"'" = .auths."'"$registry"'" | del(.auths."'"$registry"'")' > "$DEST_AUTH_FILE"
+          if [ "$registry" = "docker.io" ]; then
+            # For docker.io, the auth key will always be https://index.docker.io/v1/
+            select-oci-auth "$4" > "$DEST_AUTH_FILE"
+          else
+            # For other registries, the auth key will be modified to the full repository path, so that
+            # we can create a combined auth file with source and destination entries for `cosign copy` later
+            select-oci-auth "$4" | jq -c \
+              '.auths."'"$4"'" = .auths."'"$registry"'" | del(.auths."'"$registry"'")' > "$DEST_AUTH_FILE"
+          fi
 
           oras_args=()
           if [ -n "$6" ]; then
@@ -84,17 +181,16 @@ spec:
             printf '* Component push skipped (source digest exists at destination): %s (%s)\n' \
               "$2" "$3"
           fi
-          RESULTS_JSON=$(jq --arg name "$2" --arg url "$4:$5" '.images |= map(select(.name==$name).urls +=
-            [$url])' <<< "$RESULTS_JSON")
+          jq -n --arg name "$2" --arg url "$4:$5" '{name: $name, url: $url}' > "$TMP_RESULTS_DIR/$2-$5.json"
         }
 
-        SNAPSHOT_SPEC_FILE="$(workspaces.data.path)/$(params.snapshotPath)"
+        SNAPSHOT_SPEC_FILE="$(params.dataDir)/$(params.snapshotPath)"
         if [ ! -f "${SNAPSHOT_SPEC_FILE}" ] ; then
             echo "No valid snapshot file was provided."
             exit 1
         fi
 
-        DATA_FILE="$(workspaces.data.path)/$(params.dataPath)"
+        DATA_FILE="$(params.dataDir)/$(params.dataPath)"
         if [ ! -f "${DATA_FILE}" ] ; then
             echo "No data JSON was provided."
             exit 1
@@ -107,9 +203,24 @@ spec:
             exit 1
         fi
 
-        RESULTS_FILE="$(workspaces.data.path)/$(params.resultsDirPath)/push-snapshot-results.json"
+        RESULTS_FILE="$(params.dataDir)/$(params.resultsDirPath)/push-snapshot-results.json"
         RESULTS_JSON="{\"images\":[]}"
         SOURCE_AUTH_FILE=$(mktemp)
+
+        RUNNING_JOBS="\j" # A Bash param for number of jobs running
+        CONCURRENT_LIMIT=$(params.concurrentLimit)
+        REQUEST_COUNT=0
+        SUCCESS=true
+
+        # Wait for a slot to open up in the concurrent limit
+        wait_for_slot () {
+          while (( ${RUNNING_JOBS@P} >= "$CONCURRENT_LIMIT" )); do
+            wait -n || SUCCESS=false
+          done
+        }
+
+        # Create a temporary directory to store the results of each push
+        TMP_RESULTS_DIR=$(mktemp -d)
 
         defaultPushSourceContainer=$(jq -r '.mapping.defaults.pushSourceContainer' "$DATA_FILE")
 
@@ -168,7 +279,7 @@ spec:
             sourceContainer="${source_repo}:${source_tag}"
             # Check if the source container exists
             source_container_digest=$(oras resolve --registry-config "$SOURCE_AUTH_FILE" \
-              "${sourceContainer}" "${oras_args[@]}")
+              "${sourceContainer}")
 
             if [ -z "$source_container_digest" ] ; then
               echo "Error: Source container ${sourceContainer} not found!"
@@ -176,35 +287,90 @@ spec:
             fi
             # Push the source image with the source tag here. The source image will be
             # pushed with the provided tags below in the loop
+            wait_for_slot
             push_image "${source_container_digest}" "${name}" "${sourceContainer}" \
-              "${repository}" "${source_tag}" "$platform"
+              "${repository}" "${source_tag}" "" > "$TMP_RESULTS_DIR/${name}-${source_tag}.out" 2>&1 &
+            ((++REQUEST_COUNT))
+            echo "Request Count: $REQUEST_COUNT"
           fi
 
           for tag in $(jq -r '.[]' <<< "$imageTags") ; do
+            wait_for_slot
             # Push the container image
             push_image "${origin_digest}" "${name}" "${containerImage}" "${repository}" "${tag}" \
-            "$platform"
+            "$platform" > "$TMP_RESULTS_DIR/${name}-${tag}.out" 2>&1 &
+            ((++REQUEST_COUNT))
+            echo "Request Count: $REQUEST_COUNT"
 
             # This variable will only exist if the above logic determined the source container should
             # be pushed for this component
             if [ -n "${source_container_digest-}" ] ; then
+              wait_for_slot
               push_image "${source_container_digest}" "${name}" "${sourceContainer}" \
-                "${repository}" "${tag}-source" "$platform"
+                "${repository}" "${tag}-source" "" > "$TMP_RESULTS_DIR/${name}-${tag}-source.out" 2>&1 &
+              ((++REQUEST_COUNT))
+              echo "Request Count: $REQUEST_COUNT"
             fi
           done
         done
-        echo -n "${RESULTS_JSON}" | tee "$RESULTS_FILE"
+
+        echo "Waiting for all jobs to complete...."
+        while (( ${RUNNING_JOBS@P} > 0 )); do
+          wait -n || SUCCESS=false 
+        done
+
+        echo "Printing outputs for each push image"
+        for file in "$TMP_RESULTS_DIR"/*.out; do
+          echo "=== $(basename "${file}" .out) ==="
+          cat "$file"
+          echo
+        done
+
+        if [ "$SUCCESS" != true ]; then
+            echo "One or more jobs failed. Please check the logs above for details."
+            exit 1
+        fi
+
+        PUSHES=$(jq -s . "$TMP_RESULTS_DIR"/*.json)
+        jq --argjson PUSHES "$PUSHES" '
+          reduce $PUSHES[] as $p (.; (.images[] | select(.name == $p.name).urls) += [$p.url])
+        ' <<< "$RESULTS_JSON" | tee "$RESULTS_FILE"
+        
         printf 'Completed "%s" for "%s"\n\n' "$(context.task.name)" "$application"
       volumeMounts:
         - name: trusted-ca
           mountPath: /etc/ssl/certs/ca-custom-bundle.crt
           subPath: ca-bundle.crt
           readOnly: true
-  volumes:
-    - name: trusted-ca
-      configMap:
-        name: $(params.caTrustConfigMapName)
-        items:
-          - key: $(params.caTrustConfigMapKey)
-            path: ca-bundle.crt
-        optional: true
+    - name: create-trusted-artifact
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: "$(params.taskGitUrl)"
+          - name: revision
+            value: "$(params.taskGitRevision)"
+          - name: pathInRepo
+            value: stepactions/create-trusted-artifact/create-trusted-artifact.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)
+    - name: patch-source-data-artifact-result
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/patch-source-data-artifact-result/patch-source-data-artifact-result.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)

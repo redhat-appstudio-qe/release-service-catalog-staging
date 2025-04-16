@@ -98,18 +98,6 @@ Before a pull request can be merged:
 * The CI has to pass successfully
 * Every comment has to be addressed and resolved
 
-#### Pull Requests Only Updating the [internal Directory](internal)
-
-If the files changed for a pull request only contains things in the [internal](internal) directory, the E2E testing is irrelevant.
-This is because these resources need to be deployed to the staging cluster in order for E2E to use them, and we do not deploy resources from pull requests to that cluster.
-So, in this case, E2E tests are irrelevant and should be ignored.
-
-#### Pull Requests Updating the [internal Directory](internal) and Other Files
-
-If a pull request is updating both internal resources as well as other resources, the pull request should be split into two: one for the internal resources, one for the rest.
-The reason for this is that the internal resource pull request should be merged first. Then, the new resources will be present on the staging cluster. This allows the second
-pull request, with the other changes, to properly execute E2E with the aforementioned internal changes present on the staging cluster.
-
 ### Image References
 
 Most tasks in this repo use the release-service-utils image defined in [the release-service-utils repo](https://github.com/konflux-ci/release-service-utils).
@@ -118,6 +106,17 @@ When referencing this image, the url should be `quay.io/konflux-ci/release-servi
 For other images, the reference should always either specify an image by a non-moving tag (e.g. `registry.access.redhat.com/ubi8/ubi:8.8-1067.1698056881`)
 or by its digest (e.g. `registry.access.redhat.com/ubi8/ubi@sha256:c94bc309b197f9fc465052123ead92bf50799ba72055bd040477ded`).
 Floating tags like `latest` or `8.8` in the case of the ubi image should be avoided.
+
+### Modes for Running Pipelines
+
+Note: There are currently 2 modes that may be used when running pipelines:
+- **Legacy/PV** mode involving using a workspace that is backed by a PV (physical volume)
+- **Trusted Artifact** mode that uses an OCI registry as a mean to share data between tasks.
+
+A significant portion of tasks have been converted to support both modes. The CI process analyzes that task under test
+and performs a simple check to verify it supports Trusted Artifacts and if so, tests are executed in both modes.
+
+You can follow this [video](https://miro.com/app/board/uXjVIbidSuI=/?playRecording=5ed2a205-bad5-4f62-a1b1-1dae27ddc65c) for an overview on Trusted Artifacts
 
 ### Tekton Task Testing
 
@@ -279,11 +278,37 @@ Requirements:
 * A k8s cluster running and kubectl default context pointing to it (e.g. [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation))
 * Tekton installed in the cluster ([docs](https://tekton.dev/docs/pipelines/install/))
 
-    ```kubectl apply --filename https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml```
+```
+kubectl apply --filename https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml
+```
+
+* Enable StepActions in Tekton
+
+```
+kubectl get cm feature-flags -n tekton-pipelines -o yaml | \
+   sed -e 's|enable-step-actions: "false"|enable-step-actions: "true"|' > /tmp/ff.yaml
+kubectl apply -f /tmp/ff.yaml -n tekton-pipelines
+```
+
+* Local Registry is installed in the Cluster
+
+```
+. .github/scripts/deploy_registry.sh
+```
+
+**NOTE: This above command must be sourced.**
 
 * tkn cli installed ([docs](https://tekton.dev/docs/cli/))
 
 * jq installed
+
+* Optionally enable **Trusted Artifact** mode by setting the environment variable:
+
+```
+export USE_TRUSTED_ARTIFACTS=true
+```
+
+Note: if a task has not been converted, and you have enable Trusted Artifacts, you will see errors.
 
 Once you have everything ready, you can run the test script and pass task version directories
 as arguments, e.g.
@@ -358,12 +383,3 @@ This check shows itself as the `Linters / checkton (pull_request)` check on the 
 If it fails and you click details, the tool does a pretty good job of highlighting the failures and telling you how to fix them.
 
 We strive to have all of our tekton resources abide by shellcheck, so this check is mandatory for pull requests submitted to this repo.
-
-### Symlinks (internal dir changes only)
-
-This repository contains [one directory](internal/resources) for all tekton resources inside of the internal directory.
-
-This is so that we can point ArgoCD at it and have both the tasks and pipelines deployed to the cluster (but not the test files).
-
-If you submit a change that either adds or removes a pipeline from the [internal pipelines directory](internal/pipelines) or a task from the [internal tasks directory](internal/tasks),
-your pull request must also add or remove a sym link from the [internal resources directory](internal/resources).

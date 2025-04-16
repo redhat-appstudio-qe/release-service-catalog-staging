@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: process-file-updates-task
   labels:
-    app.kubernetes.io/version: "0.0.2"
+    app.kubernetes.io/version: "1.1.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -160,6 +160,7 @@ spec:
               exit 1
             fi
 
+            keyNotFound=false
             for (( REPLACEMENT_INDEX=0; REPLACEMENT_INDEX < REPLACEMENTS_LENGTH; REPLACEMENT_INDEX++ )); do
               echo "REPLACEMENT: #${REPLACEMENT_INDEX}"
               key="$(jq -cr ".[${PATH_INDEX}].replacements[${REPLACEMENT_INDEX}].key" "${updatePathsTmpfile}")"
@@ -173,6 +174,7 @@ spec:
               foundAt=$(head -n 1 "${TEMP}/found.txt")
               if (( foundAt == 0 )); then
                   echo "NOT FOUND"
+                  keyNotFound=true
                   continue
               fi
               echo "FOUND"
@@ -201,7 +203,7 @@ spec:
               # only a single line was replaced and that the result
               # block has the same number of lines as before
               sed -ne "${startBlock},+${valueSize}p" "${targetFile}" > "${TEMP}/result.txt"
-              diff -u "${TEMP}/{found,result}.txt" > "${TEMP}/diff.txt" || true
+              diff -u "${TEMP}/found.txt" "${TEMP}/result.txt" > "${TEMP}/diff.txt" || true
 
               replacedBlockLines=$(wc -l < "${TEMP}/result.txt")
               if [[ $replacedBlockLines != $(( valueSize +1 )) ]]; then
@@ -218,6 +220,7 @@ spec:
               REPLACEMENTS_PERFORMED=$((REPLACEMENTS_PERFORMED + 1))
             done
           fi
+          git add "${targetFile}"
         done
 
         if [ -n "${replacementsUpdateError}" ]; then
@@ -233,18 +236,70 @@ spec:
             exit 0
         fi
         if [ "${REPLACEMENTS_PERFORMED}" == 0 ] ;then
-            error="\"no replacements were performed\"" \
-            yq -o json --null-input '.str = strenv(error), .error = strenv(error)' \
-            | tee "$(results.fileUpdatesInfo.path)"
-            echo -n "Failed" |tee "$(results.fileUpdatesState.path)"
+            if [[ "$keyNotFound" == true ]]; then
+                error="\"no replacements were performed\"" \
+                yq -o json --null-input '.str = strenv(error), .error = strenv(error)' \
+                | tee "$(results.fileUpdatesInfo.path)"
+                echo -n "Failed" |tee "$(results.fileUpdatesState.path)"
+            else
+                echo "nothing needs change" \
+                    | tee -a "$(results.fileUpdatesInfo.path)"
+                echo -n "Success" |tee "$(results.fileUpdatesState.path)"
+            fi
             # it should exit 0 otherwise the task does not set the results
             # this way the InternalRequest can see what was wrong
             exit 0
         fi
 
         echo -e "\n*** START LOCAL CHANGES ***\n"
-        git diff
+        echo -e "\n*** Result from git diff --cached ***\n"
+        # compare the differences between the staging area and the latest commit
+        git diff --cached | tee "${TEMP}"/tempMRFile-cached.diff
+
         echo -e "\n*** END LOCAL CHANGES ***\n"
+
+        if [[ ! -s "${TEMP}"/tempMRFile-cached.diff ]]; then
+           # nothing needs to change, the MR is merged
+           echo "nothing needs change" \
+               | tee -a "$(results.fileUpdatesInfo.path)"
+           echo -n "Success" |tee "$(results.fileUpdatesState.path)"
+           exit 0
+        fi
+
+        # Get all MRs by paginating through results
+        page=1
+        openMRList=""
+        while true; do
+            mrPage=$(glab mr list -R "${UPSTREAM_REPO}" --search "Konflux release" \
+                --per-page 100 --page $page | grep "^!" || true)
+            # add "$mrPage" == '' check for unit testing
+            if [ -z "$mrPage" ] || [ "$mrPage" == '' ] ; then
+                break
+            fi
+            openMRList="${openMRList}${mrPage}"$'\n'
+            ((page++))
+        done
+
+        # Remove trailing newline
+        openMRList=$(echo "$openMRList" | sed '/^$/d')
+
+        if [ -n "$openMRList" ]; then
+            while IFS= read -r oneItem; do
+                mrNum=$(echo "$oneItem" | cut -f1 | tr -d '!')
+                git fetch origin merge-requests/"${mrNum}"/head:mr_"${mrNum}"
+
+                # compare if the cached content and the content in MR are the same
+                git diff --cached mr_"${mrNum}" | tee "${TEMP}"/final.diff
+
+                if [[ ! -s "${TEMP}"/final.diff ]] ; then
+                    echo "There is an existing MR with the same updates in the repo"
+                    echo "{\"merge_request\":\"${UPSTREAM_REPO}/-/merge_requests/${mrNum}\"}" \
+                        | tee -a "$(results.fileUpdatesInfo.path)"
+                    echo -n "Success" | tee "$(results.fileUpdatesState.path)"
+                    exit 0
+                fi
+            done <<< "$openMRList"
+        fi
 
         WORKING_BRANCH=$(uuidgen |awk '{print substr($1, 1, 8)}')
         git_commit_and_push --branch "$WORKING_BRANCH" --message "fileUpdates changes"
@@ -252,8 +307,8 @@ spec:
         echo "Creating Pull Request..."
         GITLAB_MR_MSG="[Konflux release] $(params.application): fileUpdates changes ${WORKING_BRANCH}"
         gitlab_create_mr --head "$WORKING_BRANCH" --target-branch "$REVISION" --title "${GITLAB_MR_MSG}" \
-            --description "${GITLAB_MR_MSG}" --upstream-repo "${UPSTREAM_REPO}" | jq '. | tostring' \
-            |tee -a "$(results.fileUpdatesInfo.path)"
+            --description "${GITLAB_MR_MSG}" --upstream-repo "${UPSTREAM_REPO}" | jq . \
+            | tee -a "$(results.fileUpdatesInfo.path)"
 
         echo -n "Success" |tee "$(results.fileUpdatesState.path)"
 

@@ -7,16 +7,41 @@ Only all `redhat-pending` or all `redhat-prod` repositories may be specified in 
 
 ## Parameters
 
-| Name                     | Description                                                                               | Optional | Default value               |
-|--------------------------|-------------------------------------------------------------------------------------------|----------|-----------------------------|
-| jsonKey                  | The json key containing the advisory data                                                 | Yes      | .releaseNotes               |
-| releasePlanAdmissionPath | Path to the JSON file of the ReleasePlanAdmission in the data workspace                   | No       | -                           |
-| snapshotPath             | Path to the JSON file of the Snapshot spec in the data workspace                          | No       | -                           |
-| dataPath                 | Path to data JSON in the data workspace                                                   | No       | -                           |
-| resultsDirPath           | Path to results directory in the data workspace                                           | No       | -                           |
-| request                  | Type of request to be created                                                             | Yes      | create-advisory             |
-| synchronously            | Whether the task should wait for InternalRequests to complete                             | Yes      | true                        |
-| pipelineRunUid           | The uid of the current pipelineRun. Used as a label value when creating internal requests | No       | -                           |
+| Name                     | Description                                                                                                                | Optional  | Default value           |
+|--------------------------|----------------------------------------------------------------------------------------------------------------------------|-----------|-------------------------|
+| jsonKey                  | The json key containing the advisory data                                                                                  | Yes       | .releaseNotes           |
+| releasePlanAdmissionPath | Path to the JSON file of the ReleasePlanAdmission in the data workspace                                                    | No        | -                       |
+| snapshotPath             | Path to the JSON file of the Snapshot spec in the data workspace                                                           | No        | -                       |
+| dataPath                 | Path to data JSON in the data workspace                                                                                    | No        | -                       |
+| resultsDirPath           | Path to results directory in the data workspace                                                                            | No        | -                       |
+| request                  | Type of request to be created                                                                                              | Yes       | create-advisory         |
+| synchronously            | Whether the task should wait for InternalRequests to complete                                                              | Yes       | true                    |
+| pipelineRunUid           | The uid of the current pipelineRun. Used as a label value when creating internal requests                                  | No        | -                       |
+| ociStorage               | The OCI repository where the Trusted Artifacts are stored                                                                  | Yes       | empty                   |
+| ociArtifactExpiresAfter  | Expiration date for the trusted artifacts created in the OCI repository. An empty string means the artifacts do not expire | Yes       | 1d                      |
+| trustedArtifactsDebug    | Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable                                     | Yes       | ""                      |
+| orasOptions              | oras options to pass to Trusted Artifacts calls                                                                            | Yes       | ""                      | 
+| sourceDataArtifact       | Location of trusted artifacts to be used to populate data directory                                                        | Yes       | ""                      |
+| dataDir                  | The location where data will be stored                                                                                     | Yes       | $(workspaces.data.path) |
+| taskGitUrl               | The url to the git repo where the release-service-catalog tasks and stepactions to be used are stored                      | No        | ""                      |
+| taskGitRevision          | The revision in the taskGitUrl repo to be used                                                                             | No        | ""                      |
+ 
+## Changes in 6.0.0
+* This task now supports Trusted artifacts
+
+## Changes in 5.1.1
+* This task no longer changes the type to RHSA if CVEs are provided
+  * It will be done in `populate-release-notes` instead
+
+## Changes in 5.1.0
+* Echo the internalRequestPipelineRunName and internalRequestTaskRunName in the log to help with debugging
+
+## Changes in 5.0.0
+* Added taskGiturl and taskGitRevision parameters to be passed to the internalRequest
+* The pipeline is called via git resolver now instead of cluster resolver
+  * This was done by changing from `-r` to `--pipeline` in the `internal-request` call
+  * The base image was updated to include this new functionality
+* Updated logic to determine InternalRequest name more reliably
 
 ## Changes in 4.4.3
 * Pass the errata service account secret name to the InternalRequest based on stage or prod

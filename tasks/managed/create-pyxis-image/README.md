@@ -9,15 +9,72 @@ The relative path of the pyxis.json file in the data workspace is output as a ta
 
 ## Parameters
 
-| Name         | Description                                                                                                                                                                                                                                                                                                                                                                                                 | Optional | Default value |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------- |
-| server       | The server type to use. Options are 'production','production-internal,'stage-internal' and 'stage'.                                                                                                                                                                                                                                                                                                         | Yes      | production    |
-| pyxisSecret  | The kubernetes secret to use to authenticate to Pyxis. It needs to contain two keys: key and cert                                                                                                                                                                                                                                                                                                           | No       | -             |
-| certified    | If set to true, the images will be marked as certified in their Pyxis entries                                                                                                                                                                                                                                                                                                                               | Yes      | false         |
-| isLatest     | If set to true, the images will have a latest tag added with their Pyxis entries                                                                                                                                                                                                                                                                                                                            | Yes      | false         |
-| rhPush       | If set to true, an additional entry will be created in ContainerImage.repositories with the registry and repository fields converted to use Red Hat's official registry. E.g. a mapped repository of "quay.io/redhat-pending/product---my-image" will be converted to use registry "registry.access.redhat.com" and repository "product/my-image". Also, this repository entry will be marked as published. | Yes      | false         |
-| snapshotPath | Path to the JSON string of the mapped Snapshot spec in the data workspace                                                                                                                                                                                                                                                                                                                                   | No       | -             |
-| dataPath     | Path to the JSON string of the merged data to use in the data workspace                                                                                                                                                                                                                                                                                                                                     | No       |               |
+| Name                    | Description                                                                                                                                                                                                                                                                                                                                                                                                 | Optional | Default value           |
+|-------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|-------------------------|
+| server                  | The server type to use. Options are 'production','production-internal,'stage-internal' and 'stage'.                                                                                                                                                                                                                                                                                                         | No       | ""                      |
+| pyxisSecret             | The kubernetes secret to use to authenticate to Pyxis. It needs to contain two keys: key and cert                                                                                                                                                                                                                                                                                                           | No       | -                       |
+| certified               | If set to true, the images will be marked as certified in their Pyxis entries                                                                                                                                                                                                                                                                                                                               | Yes      | false                   |
+| isLatest                | If set to true, the images will have a latest tag added with their Pyxis entries                                                                                                                                                                                                                                                                                                                            | Yes      | false                   |
+| rhPush                  | If set to true, an additional entry will be created in ContainerImage.repositories with the registry and repository fields converted to use Red Hat's official registry. E.g. a mapped repository of "quay.io/redhat-pending/product---my-image" will be converted to use registry "registry.access.redhat.com" and repository "product/my-image". Also, this repository entry will be marked as published. | Yes      | false                   |
+| snapshotPath            | Path to the JSON string of the mapped Snapshot spec in the data workspace                                                                                                                                                                                                                                                                                                                                   | No       | -                       |
+| dataPath                | Path to the JSON string of the merged data to use in the data workspace                                                                                                                                                                                                                                                                                                                                     | No       |                         |
+| ociStorage              | The OCI repository where the Trusted Artifacts are stored                                                                                                                                                                                                                                                                                                                                                   | Yes      | empty                   |
+| ociArtifactExpiresAfter | Expiration date for the trusted artifacts created in the OCI repository. An empty string means the artifacts do not expire                                                                                                                                                                                                                                                                                  | Yes      | 1d                      |
+| trustedArtifactsDebug   | Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable                                                                                                                                                                                                                                                                                                                      | Yes      | ""                      |
+| orasOptions             | oras options to pass to Trusted Artifacts calls                                                                                                                                                                                                                                                                                                                                                             | Yes      | ""                      | 
+| sourceDataArtifact      | Location of trusted artifacts to be used to populate data directory                                                                                                                                                                                                                                                                                                                                         | Yes      | ""                      |
+| dataDir                 | The location where data will be stored                                                                                                                                                                                                                                                                                                                                                                      | Yes      | $(workspaces.data.path) |
+| taskGitUrl              | The url to the git repo where the release-service-catalog tasks and stepactions to be used are stored                                                                                                                                                                                                                                                                                                       | No       | ""                      |
+| taskGitRevision         | The revision in the taskGitUrl repo to be used                                                                                                                                                                                                                                                                                                                                                              | No       | ""                      |
+
+## Changes in 4.0.0
+* This task now supports Trusted artifacts
+
+## Changes in 3.8.5
+* Bump the utils image user in this task
+* cleanup_tags script is now called with --repository parameter
+
+## Changes in 3.8.4
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+    * The previous fix works for one scenario, but not another. Now it works
+      for both
+
+## Changes in 3.8.3
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+    * The previous fix didn't work
+
+## Changes in 3.8.2
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+
+## Changes in 3.8.1
+* Bump the utils image used in this task
+  * The `get-image-architectures` script now uses `set -e` so that it fails
+    if a `skopeo` or `oras` call fails
+* Modify the task script to make it fail if `get-image-architectures` fails
+  and add a test for that
+
+## Changes in 3.8.0
+* Bump the utils image used in this task
+  * Clair-wrapper is now ready to work with the changes introduced previously and
+    reverted in 3.7.0, so move back to the newer utils image
+
+## Changes in 3.7.0
+* Revert image back to the version from 3.5.0
+  * The new image contained two things:
+    * New functionality to update image tags
+    * It stopped creating a second quay.io repository entry in Pyxis
+  * It turns out the second thing breaks clair-wrapper, so revert the change
+    until clair-wrapper is modified
+
+## Changes in 3.6.0
+* Bumped the utils image used in this task
+  * The updated image contains changes in create_container_image python script to enable the use case of updating tags when releasing the same image again
 
 ## Changes in 3.5.0
 * Added mandatory `dataPath` task parameter

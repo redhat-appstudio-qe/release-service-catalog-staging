@@ -20,8 +20,47 @@ the rh-push-to-registry-redhat-io pipeline.
 | enterpriseContractWorkerCount   | Number of parallel workers to use for policy evaluation.                                                                           | Yes      | 4                                                         |
 | postCleanUp                     | Cleans up workspace after finishing executing the pipeline                                                                         | Yes      | true                                                      |
 | verify_ec_task_bundle           | The location of the bundle containing the verify-enterprise-contract task                                                          | No       | -                                                         |
+| verify_ec_task_git_revision     | The git revision to be used when consuming the verify-conforma task                                                                | No       | -                                                         |
 | taskGitUrl                      | The url to the git repo where the release-service-catalog tasks to be used are stored                                              | Yes      | https://github.com/konflux-ci/release-service-catalog.git |
 | taskGitRevision                 | The revision in the taskGitUrl repo to be used                                                                                     | No       | -                                                         |
+| ociStorage                      | The OCI repository where the Trusted Artifacts are stored                                                                          | Yes      | quay.io/konflux-ci/release-service-trusted-artifacts      |
+| orasOptions                     | oras options to pass to Trusted Artifacts calls                                                                                    | Yes      | ""                                                        |
+| trustedArtifactsDebug           | Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable                                             | Yes      | ""                                                        |
+| dataDir                         | The location where data will be stored                                                                                             | Yes      | /var/workdir                                              | 
+
+## Changes in 1.13.0
+* Update all tasks that now support trusted artifacts to specify the taskGit* parameters for the step action resolvers
+* Align workspace name with changes in the apply-mapping task
+
+## Changes in 1.12.0
+* Add new parameter `verify_ec_task_git_revision` needed for consuming the verify-conforma task
+  via git resolver
+
+## Changes in 1.11.1
+* Task `embargo-check` is set to run after `check-data-keys` as it will inject the `public` key to each issue,
+  which isn't in the schema
+
+## Changes in 1.11.0
+* Add new task `close-advisory-issues` to close all issues listed in the releaseNotes after the advisory is published
+
+## Changes in 1.10.0
+* Add new task `set-advisory-severity` to run after `populate-release-notes` that will inject a severity
+  key into the releaseNotes in the data file based on the releaseNotes.type and CVEs present
+
+## Changes in 1.9.0
+* Task `populate-release-notes-images` renamed to `populate-release-notes`
+
+## Changes in 1.8.4
+* Pass taskGitUrl and taskGitRevision to create-advisory task
+
+## Changes in 1.8.3
+* Pass taskGitUrl and taskGitRevision to run-file-updates task
+
+## Changes in 1.8.2
+* Pass taskGitUrl and taskGitRevision to embargo-check task
+
+## Changes in 1.8.1
+* Set timeout for rh-sign-image-cosign task to be 6 hrs
 
 ## Changes in 1.8.0
 * Update all task pathInRepo values as they are now in `tasks/managed`
@@ -35,7 +74,7 @@ the rh-push-to-registry-redhat-io pipeline.
 * Add upload-component-sbom task to push the component-level SBOMs to Atlas.
 
 ## Changes in 1.6.0
-* Add new parameter `schema` to the `check-data-keys` task. 
+* Add new parameter `schema` to the `check-data-keys` task.
 * Add new systems pyxis,mapping & signing to the task.
 
 ## Changes in 1.5.7

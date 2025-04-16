@@ -17,8 +17,23 @@ Tekton pipeline to release content to registry.redhat.io registry.
 | enterpriseContractWorkerCount   | Number of parallel workers to use for policy evaluation.                                                                           | Yes      | 4                                                         |
 | postCleanUp                     | Cleans up workspace after finishing executing the pipeline                                                                         | Yes      | true                                                      |
 | verify_ec_task_bundle           | The location of the bundle containing the verify-enterprise-contract task                                                          | No       | -                                                         |
+| verify_ec_task_git_revision     | The git revision to be used when consuming the verify-conforma task                                                                | No       | -                                                         |
 | taskGitUrl                      | The url to the git repo where the release-service-catalog tasks to be used are stored                                              | Yes      | https://github.com/konflux-ci/release-service-catalog.git |
 | taskGitRevision                 | The revision in the taskGitUrl repo to be used                                                                                     | No       | -                                                         |
+
+## Changes in 4.9.0
+* Update all tasks that now support trusted artifacts to specify the taskGit* parameters for the step action resolvers
+* Align workspace name with changes in the apply-mapping task
+
+## Changes in 4.8.0
+* Add new parameter `verify_ec_task_git_revision` needed for consuming the verify-conforma task
+  via git resolver
+
+## Changes in 4.7.2
+* Pass taskGitUrl and taskGitRevision to run-file-updates task
+
+## Changes in 4.7.1
+* Set timeout for rh-sign-image-cosign task to be 6 hrs
 
 ## Changes in 4.7.0
 * Update all task pathInRepo values as they are now in `tasks/managed`
