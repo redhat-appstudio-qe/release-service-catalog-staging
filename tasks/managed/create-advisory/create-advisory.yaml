@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: create-advisory
   labels:
-    app.kubernetes.io/version: "4.4.3"
+    app.kubernetes.io/version: "5.1.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -39,6 +39,12 @@ spec:
     - name: pipelineRunUid
       type: string
       description: The uid of the current pipelineRun. Used as a label value when creating internal requests
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
   workspaces:
     - name: data
       description: Workspace where the json files are stored
@@ -47,7 +53,7 @@ spec:
       description: The advisory url if one was created
   steps:
     - name: run-script
-      image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+      image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
       script: |
         #!/bin/bash
         set -ex
@@ -86,11 +92,6 @@ spec:
             echo "Provided advisory type is RHSA, but no fixed CVEs were listed"
             echo "RHSA should only be used if CVEs are fixed in the advisory. Failing..."
             exit 1
-        fi
-
-        # Set type to RHSA if there are fixed CVEs
-        if [[ "$NUM_CVES" -gt 0 ]] ; then
-            advisoryData=$(jq -c '.type = "RHSA"' <<< "$advisoryData")
         fi
 
         pipelinerun_label="internal-services.appstudio.openshift.io/pipelinerun-uid"
@@ -158,24 +159,35 @@ spec:
           errataSecretName="${stagingErrataSecretName}"
         fi
 
+        IR_FILE="$(workspaces.data.path)/$(context.task.name)/ir-result.txt"
+        mkdir -p "$(dirname "$IR_FILE")"
+
         echo "Creating InternalRequest to create advisory..."
-        internal-request -r "$(params.request)" \
+        internal-request --pipeline "$(params.request)" \
                          -p application="${application}" \
                          -p origin="${origin}" \
                          -p advisory_json="${advisoryData}" \
                          -p config_map_name="${configMapName}" \
                          -p advisory_secret_name="${advisorySecretName}" \
                          -p errata_secret_name="${errataSecretName}" \
+                         -p taskGitUrl="$(params.taskGitUrl)" \
+                         -p taskGitRevision="$(params.taskGitRevision)" \
                          -s "$(params.synchronously)" \
                          -l ${pipelinerun_label}="$(params.pipelineRunUid)" \
-                         > "$(workspaces.data.path)"/ir-result.txt || \
-                         (grep "^\[" "$(workspaces.data.path)"/ir-result.txt | jq . && exit 1)
+                         > "$IR_FILE" || \
+                         (grep "^\[" "$IR_FILE" | jq . && exit 1)
 
-        internalRequest=$(awk 'NR==1{ print $2 }' "$(workspaces.data.path)"/ir-result.txt | xargs)
+        internalRequest=$(awk -F"'" '/created/ { print $2 }' "$IR_FILE")
         echo "done (${internalRequest})"
 
         echo -n "" > "$(results.advisory_url.path)"
         results=$(kubectl get internalrequest "$internalRequest" -o=jsonpath='{.status.results}')
+        internalRequestPipelineRunName="$(jq -jr '.internalRequestPipelineRunName // ""' <<< "${results}")"
+        internalRequestTaskRunName="$(jq -jr '.internalRequestTaskRunName // ""' <<< "${results}")"
+
+        echo "** internalRequestPipelineRunName: ${internalRequestPipelineRunName}"
+        echo "** internalRequestTaskRunName: ${internalRequestTaskRunName}"
+
         if [[ "$(echo "${results}" | jq -r '.result')" == "Success" ]]; then
           echo "Advisory created"
         else

@@ -4,7 +4,8 @@ kind: Pipeline
 metadata:
   name: test-update-fbc-catalog-timeout
 spec:
-  description: Tests a timed out FBC release
+  description: Tests the pipeline using a set of parameters in consonance with a production fbc release. This test
+    expects the exitCode result to be 124, as the mocks emulated a timed out IIB build.
   tasks:
     - name: run-task
       taskRef:
@@ -22,6 +23,8 @@ spec:
           value: "[]"
         - name: iibServiceAccountSecret
           value: "iib-service-account-secret"
+        - name: publishingCredentials
+          value: "publishing-credentials"
         - name: buildTimeoutSeconds
           value: 1
     - name: check-result

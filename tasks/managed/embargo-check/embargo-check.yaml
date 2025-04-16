@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: embargo-check
   labels:
-    app.kubernetes.io/version: "0.4.1"
+    app.kubernetes.io/version: "1.1.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -12,7 +12,10 @@ spec:
   description: >
     Tekton task to check if any issues or CVEs in the releaseNotes key of the data.json
     are embargoed. It checks the issues by server using curl and checks the CVEs via an
-    InternalRequest. If any issue or CVE is embargoed, the task will fail.
+    InternalRequest. If any issue does not exist or any CVE is embargoed, the task will
+    fail. The task will also fail if a Jira issue listed is for a component that does
+    not exist in the releaseNotes.content.images section or if said component does not
+    list the CVE from the issue.
   params:
     - name: dataPath
       description: Path to the JSON string of the merged data to use in the data workspace
@@ -24,15 +27,26 @@ spec:
     - name: pipelineRunUid
       type: string
       description: The uid of the current pipelineRun. Used as a label value when creating internal requests
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
   workspaces:
     - name: data
       description: The workspace where the snapshot spec json file resides
   steps:
     - name: check-issues
-      image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+      image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
+      env:
+        - name: ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: konflux-advisory-jira-secret
+              key: token
       script: |
         #!/usr/bin/env bash
-        set -x
 
         SUPPORTED_ISSUE_TRACKERS='{
             "Jira": {
@@ -56,24 +70,83 @@ spec:
             exit 1
         fi
 
+        # It is expected for the custom field ids to remain stable, but to get them, you can do:
+        # curl -H "Authorization: Bearer $ACCESS_TOKEN" https://issues.redhat.com/rest/api/2/field
+        CVE_FIELD="customfield_12324749"
+        COMPONENT_FIELD="customfield_12324752"
+
         RC=0
 
         NUM_ISSUES=$(jq -cr '.releaseNotes.issues.fixed | length' "${DATA_FILE}")
         for ((i = 0; i < NUM_ISSUES; i++)); do
+            # We set +x before the curl call and then capture the exit code. That can lead to breaking out of the
+            # current loop iteration or continuing on, so let's set -x at the beginning of each iteration
+            set -x
             issue=$(jq -c --argjson i "$i" '.releaseNotes.issues.fixed[$i]' "${DATA_FILE}")
             server=$(jq -r '.source' <<< "$issue")
             API=$(jq -r '.[] | select(.servers[] | contains("'"$server"'")) | .api' <<< "$SUPPORTED_ISSUE_TRACKERS")
             API_URL="https://$(jq -r '.source' <<< "$issue")/${API}/$(jq -r '.id' <<< "$issue")"
-            curl --fail --output /dev/null "${API_URL}"
-            if [ $? -ne 0 ] ; then
-                echo "${issue} is not publicly visible. Assuming it is embargoed and stopping pipelineRun execution."
-                RC=1
+            AUTH_ARGS=()
+            set +x # We don't want to leak the ACCESS_TOKEN
+            if [ "$server" = "issues.redhat.com" ] ; then
+                AUTH_ARGS=(-H "Authorization: Bearer $ACCESS_TOKEN")
             fi
+            OUTPUT=$(curl-with-retry --retry 3 "${AUTH_ARGS[@]}" "${API_URL}")
+            if [ $? -ne 0 ] ; then
+                echo "Error: ${issue} is not visible. Assuming it is embargoed and stopping pipelineRun execution."
+                RC=1
+                continue
+            fi
+            set -x
+
+            # Perform additional checks only for issues on issues.redhat.com
+            if [ "$server" != "issues.redhat.com" ] ; then
+                continue
+            fi
+
+            # Public should be true if and only if the security field doesn't exist and the issue is accessible
+            # without authentication
+            public=false
+
+            if ! "$(jq '.fields | has("security")' <<< "$OUTPUT")" ; then
+                if curl-with-retry --retry 3 "${API_URL}" > /dev/null; then
+                    public=true
+                fi
+            fi
+
+            # Inject public key
+            jq --argjson i "$i" --argjson public $public '.releaseNotes.issues.fixed[$i].public = $public' \
+                "${DATA_FILE}" > /tmp/data.tmp && mv /tmp/data.tmp "${DATA_FILE}"
+
+            # Perform cve specific checks only if the type is Vulnerability
+            ISSUE_TYPE=$(jq -r '.fields.issuetype.name' <<< "$OUTPUT")
+            if [ "$ISSUE_TYPE" != "Vulnerability" ] ; then
+                continue
+            fi
+
+            CVE_ID=$(jq -r --arg field "$CVE_FIELD" '.fields[$field]' <<< "$OUTPUT")
+            COMPONENT_NAME=$(jq -r --arg field "$COMPONENT_FIELD" '.fields[$field]' <<< "$OUTPUT")
+            if ! COMPONENT_IN_RELEASE_NOTES="$(jq -ec --arg name "$COMPONENT_NAME" \
+              '.releaseNotes.content.images[] | select(.component==$name)' "$DATA_FILE")"; then
+                echo -n "Error: Issue $issue lists 'Downstream Component Name' $COMPONENT_NAME but that component does"
+                echo " not appear in releaseNotes.content.images. Failing"
+                RC=1
+                continue
+            fi
+
+            if [ "$(jq --arg CVE "$CVE_ID" '.cves.fixed | has($CVE)' <<< "$COMPONENT_IN_RELEASE_NOTES")" != "true" ]
+            then
+                echo -n "Error: Issue $issue lists 'Downstream Component Name' $COMPONENT_NAME and 'CVE ID' $CVE_ID"
+                echo " but that CVE is not present in the releaseNotes.content.images section for that component."
+                RC=1
+                continue
+            fi
+
         done
 
         exit $RC
     - name: check-cves
-      image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+      image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
       script: |
         #!/usr/bin/env bash
 
@@ -95,15 +168,17 @@ spec:
 
         echo "Checking the following CVEs: ${CVES}"
 
-        internal-request -r "check-embargoed-cves" \
+        internal-request --pipeline "check-embargoed-cves" \
             -p cves="${CVES}" \
+            -p taskGitUrl="$(params.taskGitUrl)" \
+            -p taskGitRevision="$(params.taskGitRevision)" \
             -l ${PIPELINERUN_LABEL}="$(params.pipelineRunUid)" \
             -t "$(params.requestTimeout)" \
             -s true \
             > "$(workspaces.data.path)"/ir-result.txt || \
             (grep "^\[" "$(workspaces.data.path)"/ir-result.txt | jq . && exit 1)
 
-        internalRequest=$(awk 'NR==1{ print $2 }' "$(workspaces.data.path)"/ir-result.txt | xargs)
+        internalRequest=$(awk -F"'" '/created/ { print $2 }' "$(workspaces.data.path)"/ir-result.txt)
         echo "done (${internalRequest})"
 
         results=$(kubectl get internalrequest "$internalRequest" -o=jsonpath='{.status.results}')

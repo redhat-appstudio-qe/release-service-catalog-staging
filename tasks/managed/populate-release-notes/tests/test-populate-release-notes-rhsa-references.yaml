@@ -1,0 +1,148 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: test-populate-release-notes-rhsa-references
+spec:
+  description: |
+    Run the populate-release-notes task with a RHSA type. Ensure that references are added for each
+    CVE, existing ones are maintained, and there are no duplicates.
+  workspaces:
+    - name: tests-workspace
+  tasks:
+    - name: setup
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      taskSpec:
+        workspaces:
+          - name: data
+        steps:
+          - name: setup
+            image: quay.io/konflux-ci/release-service-utils:e85ceb962ee6f4d0672b4aa4e9946621ab302f20
+            script: |
+              #!/usr/bin/env sh
+              set -eux
+
+              cat > "$(workspaces.data.path)/data.json" << EOF
+              {
+                "releaseNotes": {
+                  "cves": [
+                    {
+                      "component": "comp",
+                      "packages": [
+                        "pkg1",
+                        "pkg2"
+                      ],
+                      "key": "CVE-123",
+                      "summary": "",
+                      "uploadDate": "01-01-1980",
+                      "url": ""
+                    },
+                    {
+                      "component": "comp",
+                      "key": "CVE-123",
+                      "summary": "",
+                      "uploadDate": "01-01-1980",
+                      "url": ""
+                    },
+                    {
+                      "component": "comp",
+                      "packages": [
+                        "pkg3"
+                      ],
+                      "key": "CVE-456",
+                      "summary": "",
+                      "uploadDate": "01-01-1980",
+                      "url": ""
+                    }
+                  ],
+                  "product_id": [
+                    123
+                  ],
+                  "product_name": "Red Hat Openstack Product",
+                  "product_version": "123",
+                  "cpe": "cpe:/a:example:openstack:el8",
+                  "type": "RHSA",
+                  "issues": {
+                    "fixed": [
+                      {
+                        "id": "RHOSP-12345",
+                        "source": "issues.example.com"
+                      },
+                      {
+                        "id": 1234567,
+                        "source": "bugzilla.example.com"
+                      }
+                    ]
+                  },
+                  "synopsis": "test synopsis",
+                  "topic": "test topic",
+                  "description": "test description",
+                  "solution": "test solution",
+                  "references": [
+                    "https://docs.example.com/some/example/release-notes",
+                    "https://docs.example.com/some/example/release-notes"
+                  ]
+                }
+              }
+              EOF
+
+              cat > "$(workspaces.data.path)/snapshot.json" << EOF
+              {
+                "application": "myapp",
+                "components": [
+                  {
+                    "name": "comp",
+                    "containerImage": "registry.io/image@sha256:123456",
+                    "repository": "quay.io/redhat-prod/product----repo",
+                    "rh-registry-repo": "registry.redhat.io/product/repo",
+                    "tags": [
+                      "foo",
+                      "bar"
+                    ]
+                  }
+                ]
+              }
+              EOF
+    - name: run-task
+      taskRef:
+        name: populate-release-notes
+      params:
+        - name: dataPath
+          value: "data.json"
+        - name: snapshotPath
+          value: "snapshot.json"
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      runAfter:
+        - setup
+    - name: check-result
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      taskSpec:
+        workspaces:
+          - name: data
+        steps:
+          - name: check-result
+            image: quay.io/konflux-ci/release-service-utils:e85ceb962ee6f4d0672b4aa4e9946621ab302f20
+            script: |
+              #!/usr/bin/env sh
+              set -eux
+
+              # There should be 4 references. The one provided (not duplicated), the generic classification one,
+              # and ones for CVE-123 and CVE-456
+              test "$(jq '.releaseNotes.references | length' "$(workspaces.data.path)/data.json")" \
+                == 4
+              test "$(jq -jr '.releaseNotes.references[0]' "$(workspaces.data.path)/data.json")" == \
+                "https://access.redhat.com/security/cve/CVE-123"
+              test "$(jq -jr '.releaseNotes.references[1]' "$(workspaces.data.path)/data.json")" == \
+                "https://access.redhat.com/security/cve/CVE-456"
+              test "$(jq -jr '.releaseNotes.references[2]' "$(workspaces.data.path)/data.json")" == \
+                "https://access.redhat.com/security/updates/classification/"
+              test "$(jq -jr '.releaseNotes.references[3]' "$(workspaces.data.path)/data.json")" == \
+                "https://docs.example.com/some/example/release-notes"
+      runAfter:
+        - run-task

@@ -19,6 +19,10 @@ spec:
               set -eux
 
               mkdir "$(workspaces.data.path)"/results
+
+              cat > "$(workspaces.data.path)"/previous_release.json << EOF
+              {}
+              EOF
       workspaces:
         - name: data
           workspace: tests-workspace
@@ -28,10 +32,16 @@ spec:
       params:
         - name: collectorsPath
           value: test_release_plan.json
+        - name: collectorsRepository
+          value: test_repo
         - name: collectorsResourceType
           value: releaseplan
         - name: resultsDir
           value: results
+        - name: releasePath
+          value: release.json
+        - name: previousReleasePath
+          value: previous_release.json
       runAfter:
         - setup
       workspaces:

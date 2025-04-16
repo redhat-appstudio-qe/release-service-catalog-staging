@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: run-file-updates
   labels:
-    app.kubernetes.io/version: "2.0.2"
+    app.kubernetes.io/version: "3.0.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -26,6 +26,10 @@ spec:
       type: string
       description: Name of the request
       default: "process-file-updates"
+    - name: requestTimeout
+      type: string
+      default: "900"
+      description: InternalRequest timeout
     - name: synchronously
       type: string
       description: Whether to run synchronously or not
@@ -36,6 +40,12 @@ spec:
     - name: resultsDirPath
       description: Path to the results directory in the data workspace
       type: string
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks to be used are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
   results:
     - name: mergeRequestUrl
       description: URL of MR that was created
@@ -44,7 +54,7 @@ spec:
       description: Workspace where the file updates to apply are defined
   steps:
     - name: run-script
-      image: quay.io/konflux-ci/release-service-utils:7d0135b80a47cdaa225010ea1e2dff78d057c922
+      image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
       script: |
         #!/bin/bash
         #
@@ -87,14 +97,17 @@ spec:
 
           echo -en "  Creating InternalRequest to produce file-updates..."
           requestId="$(openssl rand -hex 12)"
-          internal-request -r "$(params.request)" \
+          internal-request --pipeline "$(params.request)" \
                            -p upstream_repo="${upstream_repo}" \
                            -p repo="${repo}" \
                            -p ref="${ref}" \
                            -p paths="${updatedPaths}" \
                            -p application="${application}" \
                            -p file_updates_secret="${file_updates_secret}" \
+                           -p taskGitUrl="$(params.taskGitUrl)" \
+                           -p taskGitRevision="$(params.taskGitRevision)" \
                            -s "$(params.synchronously)" \
+                           -t "$(params.requestTimeout)" \
                            -l ${TASK_LABEL}="${TASK_ID}" \
                            -l ${REQUEST_LABEL}="${requestId}" \
                            -l "${PIPELINERUN_LABEL}=$(params.pipelineRunUid)"
@@ -118,7 +131,7 @@ spec:
             echo -e "=== Finished ===\n"
             exit 1
           else
-            MR=$(jq -r '.jsonBuildInfo | fromjson | fromjson | .merge_request // "unknown"' <<< "${results}")
+            MR=$(jq -r '.jsonBuildInfo | fromjson | .merge_request // "unknown"' <<< "${results}")
             echo "MR Created: ${MR}"
             echo "${MR}" >> "$(results.mergeRequestUrl.path)"
             RESULTS_JSON=$(jq --arg i "$i" --arg MR "${MR}" '.merge_requests[$i|tonumber] += {"url": $MR}' \

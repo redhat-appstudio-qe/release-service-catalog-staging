@@ -115,8 +115,12 @@
       "type": "object",
       "properties": {
         "product_id": {
-          "type": "integer",
-          "description": "The product ID e.g 321"
+          "type": "array",
+          "minItems": 1,
+          "description": "The list of product IDs e.g [321]",
+          "items": {
+            "type": "integer"
+          }
         },
         "product_name": {
           "type": "string",
@@ -188,6 +192,7 @@
         },
         "issues": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "fixed": {
               "type": "array",
@@ -245,27 +250,6 @@
                   "purl": {
                     "type": "string",
                     "description": "The package URL representing the image e.g. pkg:example/openstack@sha256:abcde?repository_url=quay.io/example/rhosp16-rhel8"
-                  },
-                  "cves": {
-                    "type": "object",
-                    "properties": {
-                      "fixed": {
-                        "type": "object",
-                        "description": "A list of fixed CVEs",
-                        "additionalProperties": {
-                          "type": "object",
-                          "properties": {
-                            "packages": {
-                              "type": "array",
-                              "description": "A list of packages that fixed the CVE e.g. [ 'pkg:golang/golang.org/x/net/http2@1.11.1' ]",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
                   }
                 }
               }
@@ -386,10 +370,6 @@
               "repository": {
                 "type": "string",
                 "description": "URL where you want to push the artifact e.g. quay.io/redhat/example-component"
-              },
-              "baseImage": {
-                "type": "boolean",
-                "description": "Indicates if the component serves as a base image for another component's containerImage"
               },
               "tags": {
                 "type": "array",
@@ -642,7 +622,6 @@
               "topic",
               "description",
               "solution",
-              "references",
               "content"
             ],
             "properties": {

@@ -1,0 +1,100 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: test-embargo-check-rh-issue
+spec:
+  description: |
+    Test for embargo-check where a issues.redhat.com issue has a Downstream Component Name value
+    that matches a component in the releaseNotes.content.images section and said images section
+    lists CVE-123, which is what the mocks return. The task should succeed
+  workspaces:
+    - name: tests-workspace
+  tasks:
+    - name: setup
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      taskSpec:
+        workspaces:
+          - name: data
+        steps:
+          - name: setup-values
+            image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
+            script: |
+              #!/usr/bin/env sh
+              set -eux
+
+              cat > "$(workspaces.data.path)/data.json" << EOF
+              {
+                "releaseNotes": {
+                  "issues": {
+                    "fixed": [
+                      {
+                        "id": "CVE-123",
+                        "source": "issues.redhat.com"
+                      },
+                      {
+                        "id": "12345",
+                        "source": "bugzilla.redhat.com"
+                      }
+                    ]
+                  },
+                  "content": {
+                    "images": [
+                      {
+                        "component": "my-component",
+                        "architecture": "x86_64",
+                        "containerImage": "registry.io/org/repo",
+                        "cves": {
+                          "fixed": {
+                            "CVE-123": {
+                              "packages": []
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+              EOF
+    - name: run-task
+      taskRef:
+        name: embargo-check
+      params:
+        - name: dataPath
+          value: data.json
+        - name: pipelineRunUid
+          value: $(context.pipelineRun.uid)
+        - name: taskGitUrl
+          value: "http://localhost"
+        - name: taskGitRevision
+          value: "main"
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      runAfter:
+        - setup
+    - name: check-result
+      workspaces:
+        - name: data
+          workspace: tests-workspace
+      taskSpec:
+        steps:
+          - name: check-result
+            image: quay.io/konflux-ci/release-service-utils:10bd7e4323de6ace107bbed1fe40613f21684b01
+            script: |
+              #!/usr/bin/env bash
+              set -eux
+
+              if [ "$(wc -l < "$(workspaces.data.path)"/mock_curl.txt)" != 2 ]; then
+                  echo Error: curl was expected to be called 2 times. Actual calls:
+                  cat "$(workspaces.data.path)"/mock_curl.txt
+                  exit 1
+              fi
+
+              [[ $(head -n 1 "$(workspaces.data.path)/mock_curl.txt") == *"CVE-123"* ]]
+              [[ $(tail -n 1 "$(workspaces.data.path)/mock_curl.txt") == *"12345"* ]]
+      runAfter:
+        - run-task

@@ -19,6 +19,44 @@ The relative path of the pyxis.json file in the data workspace is output as a ta
 | snapshotPath | Path to the JSON string of the mapped Snapshot spec in the data workspace                                                                                                                                                                                                                                                                                                                                   | No       | -             |
 | dataPath     | Path to the JSON string of the merged data to use in the data workspace                                                                                                                                                                                                                                                                                                                                     | No       |               |
 
+## Changes in 3.8.4
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+    * The previous fix works for one scenario, but not another. Now it works
+      for both
+
+## Changes in 3.8.3
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+    * The previous fix didn't work
+
+## Changes in 3.8.2
+* Bump the utils image used in this task
+  * Fix an error if there are no tags for a repository in an existing
+    ContainerImage object in Pyxis
+
+## Changes in 3.8.1
+* Bump the utils image used in this task
+  * The `get-image-architectures` script now uses `set -e` so that it fails
+    if a `skopeo` or `oras` call fails
+* Modify the task script to make it fail if `get-image-architectures` fails
+  and add a test for that
+
+## Changes in 3.8.0
+* Bump the utils image used in this task
+  * Clair-wrapper is now ready to work with the changes introduced previously and
+    reverted in 3.7.0, so move back to the newer utils image
+
+## Changes in 3.7.0
+* Revert image back to the version from 3.5.0
+  * The new image contained two things:
+    * New functionality to update image tags
+    * It stopped creating a second quay.io repository entry in Pyxis
+  * It turns out the second thing breaks clair-wrapper, so revert the change
+    until clair-wrapper is modified
+
 ## Changes in 3.6.0
 * Bumped the utils image used in this task
   * The updated image contains changes in create_container_image python script to enable the use case of updating tags when releasing the same image again

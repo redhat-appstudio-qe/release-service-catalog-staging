@@ -1,5 +1,5 @@
 # upload-sbom-to-atlas
-Tekton task is gathering SBOM data form working directory, converting it to supported version if needed and uploading it to Atlas.
+Tekton task is gathering SBOM data from working directory, converting it to supported version if needed and uploading it to Atlas.
 Supports both CycloneDX and SPDX format.
 
 ## Parameters
@@ -13,6 +13,9 @@ Supports both CycloneDX and SPDX format.
 | ssoTokenUrl               | URL of the SSO token issuer.                                                                                                                                                                                                         | Yes      | https://auth.redhat.com/auth/realms/EmployeeIDP/protocol/openid-connect/token |
 | supportedCycloneDxVersion | If the SBOM uses a higher CycloneDX version, `syft convert` in the task will convert all SBOMs to this CycloneDX version before uploading them to Atlas. If the SBOM is already in this version or lower, it will be uploaded as is. | Yes      | 1.4                                                                           |
 | supportedSpdxVersion      | If the SBOM uses a higher SPDX version, `syft convert` in the task will convert all SBOMs to this SPDX version before uploading them to Atlas. If the SBOM is already in this version or lower, it will be uploaded as is.           | Yes      | 2.3                                                                           |
+
+## Changes in 0.2.1
+Ignore error (but output a message) if upload request to Atlas fails.
 
 ## Changes in 0.2.0
 Remove option to skip uploading SBOMs. Skipping will be handled via Tekton.

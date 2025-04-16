@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: update-fbc-catalog-task
   labels:
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/version: "1.1.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
@@ -38,6 +38,9 @@ spec:
     - name: iibServiceAccountSecret
       type: string
       description: Secret with IIB credentials to be used
+    - name: publishingCredentials
+      type: string
+      description: Secret containing the publishing credentials used to fetch the image config
     - name: hotfix
       type: string
       default: "false"
@@ -84,6 +87,12 @@ spec:
             secretKeyRef:
               name: iib-services-config
               key: krb5.conf
+        - name: TARGET_INDEX_CREDENTIAL
+          valueFrom:
+            secretKeyRef:
+              key: targetIndexCredential
+              name: $(params.publishingCredentials)
+              optional: true
       script: |
         #!/usr/bin/env bash
 
@@ -121,17 +130,40 @@ spec:
             indexImageResolved="$(jq -r '.index_image_resolved' <<<  "${build}")"
             newCatalogCreatedDate="$(date --date "$(skopeo inspect --config "docker://${indexImageResolved}" | \
               jq -r .created)" "+%s")"
-            upstreamCatalogCreatedDate="$(date --date "$(skopeo inspect --config "docker://$(params.targetIndex)" | \
-              jq -r .created)" "+%s")"
+
+            # authentication is only required for the targetIndex
+            create_auth_file
+            targetIndexCreated="$(skopeo inspect --config "docker://$(params.targetIndex)" | jq -r .created)"
+
+            if [ -z "${targetIndexCreated}" ]; then
+              # we cannot determine the target index created date, stop here. This causes the task to trigger
+              # a new build.
+              return 0
+            fi
+
+            upstreamCatalogCreatedDate="$(date --date "${targetIndexCreated}" "+%s")"
             # checks if the index_image_resolved in the previous completed build is newer
             # than the upstream catalog index.
             # in case the new catalog index is older than the upstream, a new build is
             # required to assure the catalog integrity.
-            if [ "${newCatalogCreatedDate}" -gt "${upstreamCatalogCreatedDate}" ]; then
-              echo "${build}"
-              exit
+            if [ "${newCatalogCreatedDate}" -lt "${upstreamCatalogCreatedDate}" ]; then
+              return 0
             fi
           fi
+          echo "${build}"
+        }
+
+        create_auth_file() {
+          mkdir -p "${HOME}/.config/containers"
+          targetIndex="$(params.targetIndex)"
+          authName="${targetIndex%:*}"
+
+          # disabling debug to not leak the token
+          set +x
+          jq -n --arg authName "${authName}" \
+                --arg token "$(base64 -w 0 < <(printf %s "${TARGET_INDEX_CREDENTIAL}"))" \
+                '.auths[$authName].auth = $token' > "${HOME}/.config/containers/auth.json"
+          set -x
         }
 
         # performs kerberos authentication.
@@ -195,7 +227,7 @@ spec:
              "overwrite_fromindex_image": $overwrite_fromindex_image,
              "publish_index_image": $publish_index_image,
              "sign_index_image": $sign_index_image
-            } | tostring' | tee "$(results.genericResult.path)"
+            } '| tee "$(results.genericResult.path)"
 
         # if it finds a build which is completed or in progress, it should exit this step and jump to
         # the next step `s-wait-for-build-state` which will watch the build until it is completed.
@@ -272,7 +304,7 @@ spec:
                 esac
             done
             echo
-            jq -cr '{ "state": .state, "state_reason": .state_reason }' "$(results.jsonBuildInfo.path)" | jq -Rc \
+            jq -cr '{ "state": .state, "state_reason": .state_reason }' "$(results.jsonBuildInfo.path)" \
             | tee "$(results.buildState.path)"
             test "${state}" = "complete" && exit 0 || exit 1
         }
@@ -297,7 +329,8 @@ spec:
             #
             indexImageDigests=$(echo "${indexImageDigestsRaw}" | \
                jq -r \
-               '.manifests[]? | select(.mediaType=="application/vnd.docker.distribution.manifest.v2+json") | .digest')
+               '.manifests[]? | select(.mediaType=="application/vnd.docker.distribution.manifest.v2+json") | .digest' \
+               | tr '\n' ' ' | sed 's/ $//')  # make sure the result is on one line and remove trailing space
             echo -n "${indexImageDigests}" > "$(results.indexImageDigests.path)"
             if [ -z "${indexImageDigests}" ] ; then
               echo "Index image produced is not multi-arch with a manifest list"
