@@ -1,4 +1,4 @@
-# Release Service Catalog
+# Release Service Catalog test
 
 This repository contains a collection of Tekton resources to be used with the
 [Release Service](https://github.com/konflux-ci/release-service). The main purpose of these
